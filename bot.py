@@ -4,6 +4,7 @@ import json
 import random
 import pytz
 import threading
+import asyncio
 from datetime import time
 from flask import Flask
 from telegram.ext import (
@@ -18,7 +19,7 @@ TOKEN   = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 PORT    = int(os.environ.get("PORT", 8000))
 TZ      = pytz.timezone("Europe/Kyiv")
-ACTIVE_COUNT = 5
+ACTIVE_COUNT = 5  # скільки цитат тримати в quotes.json
 
 # === Завантаження цитат ===
 def load_quotes(path="quotes.json"):
@@ -29,7 +30,6 @@ def load_quotes(path="quotes.json"):
 async def send_random_quote(ctx: ContextTypes.DEFAULT_TYPE):
     quotes = load_quotes()
     await ctx.bot.send_message(chat_id=CHAT_ID, text=f"💀 {random.choice(quotes)}")
-    # плануємо наступну через 1–3 години
     delay = random.randint(3600, 3*3600)
     ctx.job_queue.run_once(send_random_quote, delay)
 
@@ -56,30 +56,35 @@ async def remind_bedtime(ctx: ContextTypes.DEFAULT_TYPE):
 async def ping(update: ContextTypes.DEFAULT_TYPE, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Бот працює!")
 
-# === Старт бота в background ===
+# === Функція запуску бота в окремому потоці ===
 def run_bot():
+    # Створюємо новий asyncio-event loop для цього потоку
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = ApplicationBuilder().token(TOKEN).build()
     jq: JobQueue = app.job_queue
 
-    # обробник для /ping
+    # Обробник для /ping
     app.add_handler(CommandHandler("ping", ping))
 
-    # ротація цитат одразу й потім кожні 3 дні
+    # Ротація цитат одразу й потім кожні 3 дні
     jq.run_once(rotate_quotes, when=0)
     jq.run_repeating(rotate_quotes, interval=3*24*3600)
 
-    # рандомна цитата через 30 хв, потім ланцюжок
+    # Перша рандомна цитата через 30 хв, далі ланцюжком
     jq.run_once(send_random_quote, when=30*60)
 
-    # фіксовані нагадування
+    # Фіксовані розсилки
     jq.run_daily(remind_todo,     time(hour=7,  minute=30, tzinfo=TZ))
     jq.run_daily(remind_no_reels, time(hour=8,  minute=0,  tzinfo=TZ))
     jq.run_daily(remind_both,     time(hour=14, minute=0,  tzinfo=TZ))
     jq.run_daily(remind_bedtime,  time(hour=0,  minute=0,  tzinfo=TZ))
 
+    # Запуск polling
     app.run_polling()
 
-# === HTTP-health-check ===
+# === HTTP health-check для Render ===
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
